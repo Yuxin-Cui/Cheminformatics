@@ -1,0 +1,419 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Cheminformatics abbreviations:
+SMILES: simplified molecular-input line-entry system
+SDF: Structure Data File
+
+
+# loading packages
+
+```{r, warning=F, message=F}
+library(ChemmineR)
+library(rcdk)
+library(chemometrics) 
+library(cluster)
+library(rgl) 
+library(tidyverse)
+library(vegan) #dissimilarity analysis
+library(factoextra) #multivariate data analyses
+library(fingerprint) #binary fingerprints of arbitrary length
+library(fmcsR) #compute flexible MCS between two sdfs
+library(NbClust ) # determining the best number of clusters
+library(gridExtra) # Miscellaneous Functions for "Grid" Graphics
+library(fpc) # clustering and cluster validation
+library(rJava) # simple R-to-Java interface
+library(ChemmineOB)  # cheminformatics functionalities OpelBabel C++ project
+library(export)
+library(scatterplot3d)
+library(readxl)
+library(data.table)
+library(caret)
+```
+
+
+# Convert the smiles format to the sdf format
+
+```{r}
+df<-read_excel("Drug compound smiles 1192-21.xls", skip=2) %>% 
+  select(1, 8) %>% 
+  view()
+
+head(df)
+
+smilist<-df[[2]]
+
+names(smilist)<-df[[1]]
+
+sdfset <- smiles2sdf(smilist)
+
+sdf.visualize(sdfset) 
+
+write.SDF(sdfset, file="DHX36inh_sub.sdf", cid=TRUE)
+```
+
+# Visualize thE sdf files
+
+```{r}
+# Reading and visualizing sdf files locally 
+# https://zinc.docking.org/substances/search/?q=CMP1
+
+sdfset <- read.SDFset(c('DHX36inh_sub.sdf'))
+
+for (i in 1:length(sdfset)) {
+  i
+  p = plot(CMP[[i]])
+  p
+}
+
+```
+# Visualize the sdfset as a table
+
+```{r}
+# data table of compounds including images
+# SDFDataTable(sdfset[1:5])
+SDFDataTable(sdfset)
+htmlwidgets::saveWidget(SDFDataTable(sdfset), "DHX36inh str.html")
+```
+
+# Plot a structure of a single SMILES file
+
+```{r}
+compound1 <- 'Nc1c(C(Nc(cccc2)c2C(c2ccccc2)=O)=O)sc2ncccc12'
+mol1<- parse.smiles(compound1,kekulise=TRUE)[[1]]
+mol1
+sdf1 <- smiles2sdf(compound1)
+plot(sdf1)
+```
+
+# Search a compound in the PubChem
+
+```{r}
+# Define the smiles of the compound
+query <- compound1
+
+# Search
+compound_res <- pubchemSmilesSearch(query)
+
+# Plot the top 5 result
+for (i in 1:5) {
+  i
+  p = plot(compound_res[[i]])
+  p
+}
+
+```
+
+
+```{r}
+# Assigning compound IDs and keeping them unique:
+cid(sdfset)[1:50] # Returns IDs from SDFset object
+sdfid(sdfset)[1:50] # Returns IDs from SD file header block
+
+unique_ids <- makeUnique(sdfid(sdfset))
+cid(sdfset) <- unique_ids 
+```
+```{r}
+# Compute atom frequency matrix, molecular weight and formula:
+propma <- data.frame(MF=MF(sdfset), MW=MW(sdfset), atomcountMA(sdfset))
+head(propma) 
+```
+
+```{r}
+# Assign matrix data to data block:
+datablock(sdfset) <- propma 
+datablock(sdfset[1]) 
+```
+
+```{r}
+# String searching in the sdfset:
+grepSDFset("8011-7983", sdfset, field="datablock", mode="subset") 
+grepSDFset("8011-7983", sdfset, field="datablock", mode="index") 
+```
+
+```{r}
+# Plot molecule structure of one or many SDFs
+plot(sdfset[1:4], print=FALSE)
+sdf.visualize(sdfset[1:4]) # View compounds in a web browser 
+```
+
+```{r}
+# Structure similarity searching and clustering:
+apset <- sdf2ap(sdfset) ## Generate atom pair descriptor database for searching 
+apset
+
+```
+
+```{r}
+# Load the apset data 
+cmp.search(apset, apset[1], type=3, cutoff = 0.3, quiet=TRUE) ## Search apset database with single compound. 
+cmp.cluster(db=apset, cutoff = c(0.65, 0.5), quiet=TRUE)[1:4,] ## Binning clustering using variable similarity cutoffs.
+```
+
+```{r}
+# OpenBabel Functions
+propOB(sdfset[1]) ## Properties from OpenBabel such as 'abonds', 'atoms', 'bonds', 'dbonds', 'HBA1', 'HBA2', 'HBD', 'logP', 'MR', 'MW', 'nF', 'sbonds', 'tbonds', 'TPSA'. 
+fingerprintOB(sdfset,"FP2")
+```
+
+```{r}
+#count rotatable bonds
+smartsSearchOB(sdfset[1:5],"[!$(*#*)&!D1]-!@[!$(*#*)&!D1]",uniqueMatches=FALSE)
+```
+
+```{r}
+# Compute the monoisotopic (exact) mass of a set of compounds
+exactMassOB(sdfset[1:5])
+
+sdfset2 = regenerateCoords(sdfset[1:5])
+
+plot(sdfset[4], regenCoords=TRUE,print=FALSE)
+
+openBabelPlot(sdfset[4],regenCoords=TRUE)
+```
+
+```{r}
+# Generate 3D coordinates for compounds with only 2D coordinates.
+sdf3D = generate3DCoords(sdfset[1])
+plot(sdf3D)
+canonicalSdf = canonicalize(sdfset[1])
+mapping = canonicalNumbering(sdfset[1])
+```
+
+```{r}
+# Define descriptor set in a simple function
+desc <- function(sdfset) 
+  cbind(SDFID=sdfid(sdfset), 
+        MW=MW(sdfset), 
+        APFP=desc2fp(x=sdf2ap(sdfset), descnames=1024, type="character"), AP=sdf2ap(sdfset, type="character"), rings(sdfset, type="count", upper=6, arom=TRUE) )  
+
+# Run sdfStream with desc function and write results to a file
+sdfStream(input="DHX36inh_sub.sdf", output="matrix.xls", fct=desc, Nlines=1000) 
+
+df_matrix <- fread("matrix.xls")
+head(df_matrix)
+
+```
+
+```{r}
+# Compound similarity searching
+apset <- sdf2ap(sdfset) 
+fpset <- desc2fp(apset, descnames=1024, type="FPset") 
+fpSim(fpset[1], fpset, method="Tanimoto", cutoff=0.5, top=5) 
+```
+```{r}
+# Clustering according to the distance of fingerprints
+simMAap <- sapply(cid(fpset), function(x) fpSim(x=fpset[x], fpset, sorted=FALSE)) 
+hc <- hclust(as.dist(1-simMAap), method="single")
+plot(as.dendrogram(hc), edgePar=list(col=4, lwd=2), horiz=F)   
+```
+
+```{r}
+# Clustering according to the atom pair distance matrix
+res_cluster <- cmp.cluster(db=apset, cutoff=0, save.distances="distmat.rda", quiet=TRUE) 
+load("distmat.rda")
+hc <- hclust(as.dist(distmat), method="single") 
+hc[["labels"]] <- cid(apset) # Assign correct item labels 
+plot(as.dendrogram(hc), edgePar=list(col=4, lwd=2), horiz=F) 
+```
+
+```{r}
+# heatmap
+library(gplots) 
+heatmap.2(1-distmat, Rowv=as.dendrogram(hc), Colv=as.dendrogram(hc),col=colorpanel(40, "darkblue", "yellow", "white"), density.info="none", trace="none") 
+graph2ppt(file=paste0(Sys.Date(), "_plot",".pptx"), append =TRUE) 
+```
+
+```{r}
+# Identification of hits from target: mock test
+mols <- load.molecules("DHX36inh_sub.sdf") ## limitation: no ID
+query.fp <- get.fingerprint(mols[[1]], type = 'maccs')
+target.mols <- mols
+target.fps <- lapply(target.mols, get.fingerprint, type = 'maccs')
+target.fps
+sims <-
+  data.frame(sim = do.call(
+    rbind,
+    lapply(
+      target.fps,
+      fingerprint::distance,
+      fp2 = query.fp,
+      method = 'tanimoto'
+    )
+  ))
+subset(sims, sim >= 0.7)
+hits <- which(sims >= 0.7)
+hits
+```
+
+```{r}
+# visualize the hits
+plot(sdfset[hits])
+graph2ppt(file=paste0(Sys.Date(), "_plot",".pptx"), append =TRUE) 
+```
+
+```{r}
+# Distances between CMP1 and the rest of molecules ----
+mols<-load.molecules( c('DHX36inh_sub.sdf') ) ## rcdk
+query.mol<-mols[[1]]
+target.mols<-mols
+#target.mols
+fps <- lapply(mols, get.fingerprint, type='extended')
+fps
+fp.sim <- fingerprint::fp.sim.matrix(fps, method='tanimoto')
+fp.dist <- 1 - fp.sim
+fp.dist
+```
+
+
+```{r}
+# Hierarchical clustering ----
+d <- dist(fp.dist, method = "euclidean")
+hc.res <- hclust(d, method = "ward.D2" )
+
+fviz_dend(hc.res, cex = 0.6, k = 4, color_labels_by_k = TRUE)
+graph2ppt(file=paste0(Sys.Date(), "_plot",".pptx"), append =TRUE) 
+```
+
+```{r}
+# K-means clustering and visualization
+
+# Optimal kmeans cluster number
+fviz_nbclust(fp.dist, kmeans, method = "wss") +
+geom_vline(xintercept = 4, linetype = 2)
+
+# k-means clustering
+km.res <- kmeans(fp.dist, 4, nstart = 5)
+km.res
+fviz_cluster(km.res, data = fp.dist, ellipse.type = "convex", repel = T)
+graph2ppt(file=paste0(Sys.Date(), "_plot",".pptx"), append =TRUE) 
+
+# Statistics for K-means
+# stats
+km_stats <- cluster.stats(fp.dist,  km.res$cluster)
+km_stats
+
+# Silhouette coefficient of observations
+sil <- silhouette(km.res$cluster, dist(fp.dist))
+head(sil[, 1:3], 10)
+plot(sil, main ="Silhouette plot - K-means")
+```
+
+```{r}
+# Create a 3D scatter plot of MDS result. 
+apset <- sdf2ap(sdfset) 
+clusters <- cmp.cluster(db=apset, cutoff = c(0.7, 0.8, 0.9), quiet = TRUE)
+coord <- cluster.visualize(apset, clusters, size.cutoff=1, dimensions=3, quiet=TRUE) 
+scatterplot3d(coord) 
+```
+
+```{r}
+# Visualize Similarity Search
+similarities <- cmp.search(apset, apset[1], type=3, cutoff = 5)
+sdf.visualize(sdfset[similarities[,1]]) 
+```
+
+# Machine learning
+
+e.g. Predict solubility using an example of dataset below. 
+
+```{r}
+# data
+data_original <- fread("https://raw.githubusercontent.com/deepchem/deepchem/master/datasets/delaney-processed.csv")
+head(data_original)
+names(data_original)
+
+library(janitor)
+data <- data_original %>% 
+  select(-1) %>% 
+  janitor::clean_names()
+
+str(data)
+
+# Load necessary libraries
+library(randomForest)
+
+# Split data into training and testing sets
+set.seed(123)
+train_index <- sample(1:nrow(data), 0.7*nrow(data))
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+
+# Fit random forest model
+model <- randomForest(esol_predicted_log_solubility_in_mols_per_litre ~ ., data = train_data)
+
+# Predict bioactivity on test data
+predictions <- predict(model, newdata = test_data)
+
+# Evaluate model performance
+rmse <- RMSE(predictions, test_data$esol_predicted_log_solubility_in_mols_per_litre)
+rmse
+
+# Summary: RMSE, Rsuared, and MAE. 
+postResample(pred = predictions, obs = test_data$esol_predicted_log_solubility_in_mols_per_litre)
+
+# plot the prediction
+results <- data.frame(Predicted = predictions, Actual = test_data$esol_predicted_log_solubility_in_mols_per_litre)
+ggplot(data = results, aes(x = Actual, y = Predicted)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Actual", y = "Predicted", title = "Predicted vs Actual")
+
+```
+
+# AutoML method
+
+In this method, a potentially better model could be found by running the  H2O’s AutoML tool and setting up the number of models (max_models). The documents of this tool can be found at https://docs.h2o.ai/h2o/latest-stable/h2o-docs/automl.html. However, the running speed could be slow. 
+
+
+```{r}
+library(h2o)
+
+# Start the H2O cluster (locally)
+h2o.init()
+
+# import datasets
+train_set2 <- as.h2o(train_data)
+test_set2 <- as.h2o(test_data)
+
+# Identify predictors and response
+y <- "esol_predicted_log_solubility_in_mols_per_litre"
+x <- setdiff(names(train_set2), y)
+
+# Run AutoML for mutliple base models
+aml <- h2o.automl(x = x, y = y,
+                  training_frame = train_set2,
+                  max_models = 5,
+                  seed = 1)
+
+# View the AutoML Leaderboard
+lb <- aml@leaderboard
+print(lb, n = nrow(lb))  # Print all rows instead of default (6 rows)
+
+# The leader model is stored here
+fit_aml <- aml@leader
+fit_aml
+
+# Retrieve the model performance
+perf <- h2o.performance(fit_aml, test_set2)
+perf
+RMSE_aml <- perf@metrics$RMSE
+
+# Predict solubility on test data
+predictions <- predict(fit_aml, newdata = test_set2)$predict %>% 
+  as.data.frame() %>% 
+  pull()
+
+# plot the prediction
+results <- data.frame(Predicted = predictions, Actual = test_data$esol_predicted_log_solubility_in_mols_per_litre)
+ggplot(data = results, aes(x = Actual, y = Predicted)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Actual", y = "Predicted", title = "Predicted vs Actual")
+```
+
+
+
+
